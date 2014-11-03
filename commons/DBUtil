@@ -1,0 +1,287 @@
+<?php
+
+/**
+ * Example:<br/>
+ * $db = DBUtil::init();<br/>
+ * $db->query("select * from user");<br/>
+ * @author Nomandia
+ */
+// Include constants
+include_once __DIR__.'/../include/constants.php';
+
+final class DBUtil {
+
+    const DB_AUTO_CLOSE = false;
+    
+    const SHOW_ERROR = true;
+
+    /**
+     * 执行insert语句时返回新的主键
+     * @var int 新的主键
+     */
+    public $insert_id = 0;
+    public $error_no = 0;
+    public $error_msg = null;
+    private static $instance = null;
+    private $link_id = 0;
+
+    function __clone() {}
+
+    /**
+     * init DBUtil
+     * @return DBUtil object
+     */
+    public static function init() {
+        if ( !self::$instance ) {
+            self::$instance = new DBUtil();
+        }
+        return self::$instance;
+    }
+
+    function __construct() {
+        $this->link_id = @mysqli_connect(MYSQL_HOST, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DBNAME, MYSQL_PORT);
+        @mysqli_query($this->link_id, "set names utf8");
+    }
+
+    /**
+     * Query something with SQL.
+     * @param string $sql_str SQL
+     * @param string $key primary key
+     * @param bool $auto_close
+     * @return array
+     */
+    public function query($sql_str, $key = '', $auto_close = self::DB_AUTO_CLOSE) {
+        $rs = @mysqli_query($this->link_id, $sql_str);
+        $this->error_no = @mysqli_errno($this->link_id);
+        if ( $this->error_no > 0 ) {
+            $this->error_msg = @mysqli_error($this->link_id);
+            if ( self::SHOW_ERROR ) echo "$sql_str<br/>";
+        } else { // fetch result without error.
+            if ( $key ) {
+                while ( $row = $rs->fetch_assoc() ) {
+                    $result[$row[$key]] = $row;
+                }
+            } else {
+                while ( $row = $rs->fetch_assoc() ) {
+                    $result[] = $row;
+                }
+            }
+        }
+        if ( $rs ) {
+            $rs->close();
+        }
+        if ( $auto_close ) {
+            $this->close();
+        }
+        return empty($result) ? '' : $result;
+    }
+
+    /**
+     * Query one line.
+     * @param string $sql_str SQL
+     * @param string $wrapped Get column with key
+     * @param bool $auto_close auto close link.(not recommended)
+     * @return mixed $result column value or an array.
+     */
+    public function query_one($sql_str, $wrapped = '', $auto_close = self::DB_AUTO_CLOSE) {
+//        var_dump($this->link_id);
+//        echo $sql_str.'<br/>';
+        $rs = @mysqli_query($this->link_id, $sql_str);
+        $this->error_no = @mysqli_errno($this->link_id);
+        if ( $this->error_no > 0 || !$rs ) {
+            $this->error_msg = @mysqli_error($this->link_id);
+            if ( self::SHOW_ERROR ) echo $this->error_msg.'<br/>';
+        } else {
+            if ( $rs )
+                $result = $rs->fetch_assoc();
+        }
+        if ( $auto_close ) {
+            $this->close();
+        }
+        if ( $result && $wrapped ) {
+            return $result[$wrapped];
+        }
+        return empty($result) ? '' : $result;
+    }
+
+    /**
+     * Execute a SQL. Just like Select , Insert or Delete , executable.
+     * @param string $sql_str SQL
+     * @param bool $auto_close
+     * @return int $result affect_rows
+     */
+    public function execute($sql_str, $auto_close = self::DB_AUTO_CLOSE) {
+        @mysqli_query($this->link_id, $sql_str);
+//        echo "exec:".$sql_str.'<br/>';
+        $this->error_no = @mysqli_errno($this->link_id);
+        if ( $this->error_no > 0 ) { // hold errors.
+            $this->error_msg = @mysqli_error($this->link_id);
+            if ( self::SHOW_ERROR ) echo $this->error_msg.'<br/>';
+        } else {
+            // if an insert SQL you may wanna get insert_id after execute.
+            $this->insert_id = @mysqli_insert_id($this->link_id);
+        }
+        if ( $auto_close ) {
+            $this->close();
+        }
+        return $this->link_id->affected_rows;
+    }
+
+    /**
+     * Close link
+     */
+    public function close() {
+        @mysqli_close($this->link_id);
+    }
+
+    /**
+     * Open transaction and execute batch sqls in array.
+     * @param mixed $sql_array SQLs or SQL
+     * @param bool $auto_close
+     * @return bool $result
+     */
+    public function exec_transaction($sql_array, $auto_close = self::DB_AUTO_CLOSE) {
+        @mysqli_autocommit($this->link_id, false);
+        if ( is_array($sql_array) ) {
+            //var_dump($sql_array);
+            foreach ( $sql_array as $sql_str ) {
+//                echo "$sql_str<br/>";
+                @mysqli_query($this->link_id, $sql_str);
+                $this->error_no = @mysqli_errno($this->link_id);
+                if ( $this->error_no > 0 ) { // Quit with an error.
+                    if ( self::SHOW_ERROR ) echo @mysqli_error($this->link_id).'<br/>';
+//                    var_dump($this->error_msg);
+//                    echo "Error:$sql_str<br/>";
+//                    var_dump(@mysqli_error_list($this->link_id));
+                    break;
+                }
+                $this->insert_id = @mysqli_insert_id($this->link_id);
+            }
+        } else {
+            $this->execute($sql_str);
+        }
+        if ( $this->error_no > 0 ) {
+//            echo "rollback<br/>";
+            $this->error_msg = @mysqli_error_list($this->link_id);
+            if ( self::SHOW_ERROR ) echo @mysqli_error($this->link_id).'<br/>';
+//            var_dump($this->error_msg);
+            @mysqli_rollback($this->link_id);
+        } else {
+            @mysqli_commit($this->link_id);
+//            echo "commit{$r}<br/>";
+        }
+        @mysqli_autocommit($this->link_id, true); //reset autocommit
+        if ( $auto_close ) {
+            $this->close();
+        }
+        return !$this->error_no;
+    }
+
+    /**
+     * Open transaction
+     */
+    public function begin_transaction() {
+        @mysqli_autocommit($this->link_id, false);
+    }
+
+    /**
+     * Commit transation
+     * @param bool $auto_close
+     * @return bool $result
+     */
+    public function commit($auto_close = self::DB_AUTO_CLOSE) {
+        $this->error_no = @mysqli_errno($this->link_id);
+        if ( $this->error_no > 0 ) {
+            if ( self::SHOW_ERROR ) echo @mysqli_error($this->link_id).'<br/>';
+            @mysqli_rollback($this->link_id);
+        } else {
+            @mysqli_commit($this->link_id);
+        }
+        @mysqli_autocommit($this->link_id, true);
+        if ( $auto_close ) {
+            $this->close();
+        }
+        return !$this->error_no;
+    }
+
+    // STMT SQLs
+    /**
+     * Execute STMT SQL, protect inject attack
+     * @param string $sql_str STMT SQL string
+     * @param array $params Params array.
+     * @return mixed $executeResult
+     */
+    function execute_stmt($sql_str, $params ) {
+        /* create a prepared statement */
+        $stmt = @mysqli_prepare($this->link_id, $sql_str);
+        if ( $stmt ) {
+            // Rebuild params table with reference pass, otherwise its $params will be considered a array instead of a separate parameter table 
+            foreach($params as $k=>$v){
+                $array[] = &$params[$k];
+            }
+            call_user_func_array(array($stmt, 'bind_param'), $array);
+            /* execute query */
+            $res = $stmt->execute();
+            if ( $res ) { // hold insert_id if got it
+                $this->insert_id = $stmt->insert_id;
+                $affected_rows = $stmt->affected_rows;
+            } else {
+                $this->error_no = $stmt->errno;
+                $this->error_msg = $stmt->error;
+                if ( self::SHOW_ERROR ) echo $this->error_msg .'<br/>';
+            }
+            /* close statement */
+            $stmt->close();
+            return $res > 0 ? $affected_rows : 0;
+        } else {
+            $this->error_no = @mysqli_errno($this->link_id);
+            $this->error_msg = @mysqli_error($this->link_id);
+            if ( self::SHOW_ERROR ) echo @mysqli_error($this->link_id).'<br/>';
+        }
+        return false;
+    }
+
+    /**
+     * Execute STMT Single
+     * @param string $sql_str
+     * @param array $params
+     */
+    function query_stmt($sql_str, $params = array(), $key = '') {
+        $stmt = @mysqli_prepare($this->link_id, $sql_str);
+        if ( $stmt ) {
+            foreach ( $params as $type=> $value ) {
+                /* bind parameters for markers */
+                @mysqli_stmt_bind_param($stmt, $type, $value);
+            }
+            /* execute query */
+            $res = $stmt->execute();
+            if ( $res === false ) {
+                $this->error_no = $stmt->errno;
+                $this->error_msg = $stmt->error;
+                $stmt->close();
+                return false;
+            }
+            $result = $stmt->get_result();
+            if ( $result ) {
+                if ( $key ) {
+                    while ( $row = $result->fetch_assoc() ) {
+                        $data[$row[$key]] = $row;
+                    }
+                } else {
+                    while ( $row = $result->fetch_assoc() ) {
+                        $data[] = $row;
+                    }
+                }
+                $result->free();
+            }
+            $stmt->close();
+            return $data ? $data : false;
+        } else {
+            $this->error_no = @mysqli_errno($this->link_id);
+            $this->error_msg = @mysqli_error($this->link_id);
+            if ( self::SHOW_ERROR ) echo @mysqli_error($this->link_id).'<br/>';
+        }
+        return false;
+    }
+}
+?>
